@@ -1,4 +1,6 @@
-class Articles::Card < Phlex::HTML
+class Articles::Card < LiveView
+  live_id :article
+
   def initialize(article:)
     @article = article
   end

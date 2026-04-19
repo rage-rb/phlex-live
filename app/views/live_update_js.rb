@@ -3,6 +3,7 @@
 # a <script> tag that handles:
 #   - SSE connection with automatic reconnect
 #   - Full-page morphing for SPA-like navigation
+#   - Targeted stream operations (replace, append, prepend, remove)
 #   - Form interception (submits via fetch instead of full reload)
 #   - Browser history management (back/forward buttons)
 module LiveUpdateJs
@@ -14,12 +15,41 @@ module LiveUpdateJs
 
   def live_update_js(sse_url:)
     <<~JS
-      import { morphDocument } from "https://cdn.jsdelivr.net/npm/morphlex@1.4.0/dist/morphlex.min.js";
+      import { morph, morphDocument } from "https://cdn.jsdelivr.net/npm/morphlex@1.4.0/dist/morphlex.min.js";
 
       (function() {
         var sseUrl = #{sse_url.to_json};
         var LIVE_HEADER = "Phlex-Live";
         var morphOpts = { preserveChanges: true };
+
+        // Handles targeted stream operations broadcast from LiveView#replace,
+        // #append, #prepend, and #remove. Each action type maps to a specific
+        // DOM mutation on the element identified by its component ID.
+        function handleStream(data) {
+          switch (data.action) {
+            case "replace":
+              var tmp = document.createElement("div");
+              tmp.innerHTML = data.html;
+              var newEl = tmp.firstElementChild;
+              if (newEl && newEl.id) {
+                var target = document.getElementById(newEl.id);
+                if (target) morph(target, newEl, morphOpts);
+              }
+              break;
+            case "append":
+              var container = document.getElementById(data.target);
+              if (container) container.insertAdjacentHTML("beforeend", data.html);
+              break;
+            case "prepend":
+              var container = document.getElementById(data.target);
+              if (container) container.insertAdjacentHTML("afterbegin", data.html);
+              break;
+            case "remove":
+              var el = document.getElementById(data.id);
+              if (el) el.remove();
+              break;
+          }
+        }
 
         // Morphs the entire document (html, head, body) using the server-rendered
         // HTML. Used for full-page navigation updates sent as SSE "update" events
@@ -28,11 +58,18 @@ module LiveUpdateJs
           morphDocument(document, html, morphOpts);
         }
 
+        // Establishes the SSE connection. Listens for two event types:
+        //   "update" — full-page HTML, morphed into the current document
+        //   "stream" — JSON-encoded targeted DOM operation
         function connect() {
           var source = new EventSource(sseUrl);
 
           source.addEventListener("update", function(e) {
             applyUpdate(e.data);
+          });
+
+          source.addEventListener("stream", function(e) {
+            handleStream(JSON.parse(e.data));
           });
         }
 
