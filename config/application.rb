@@ -10,8 +10,15 @@ Rage.configure do
   config.router.form_actions = true
 
   config.renderer :phlex do |component, **props|
-    headers["content-type"] = "text/html"
-    component.new(**props).call
+    html = component.new(**props).call
+
+    if request.headers["Phlex-Live"]
+      Rage::SSE.broadcast("live", Rage::SSE.message(html, event: "update"))
+      head 200
+    else
+      headers["content-type"] = "text/html"
+      html
+    end
   end
 end
 

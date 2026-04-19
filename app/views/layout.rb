@@ -1,4 +1,6 @@
 class Layout < Phlex::HTML
+  include LiveUpdateJs
+
   def initialize(title: "CMS Admin")
     @title = title
   end
@@ -21,6 +23,8 @@ class Layout < Phlex::HTML
         main(class: "container") do
           yield
         end
+
+        live_update_scripts
       end
     end
   end
