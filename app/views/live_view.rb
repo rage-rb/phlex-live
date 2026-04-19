@@ -10,6 +10,8 @@ class LiveView < Phlex::HTML
   SEPARATOR = "--"
   STREAM = "live"
 
+  include ServerSideHandlers
+
   class << self
     # Declares which constructor arguments form the component's identity.
     # Each attribute should correspond to an ActiveRecord model instance.

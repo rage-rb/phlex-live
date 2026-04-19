@@ -3,4 +3,5 @@ Rage.routes.draw do
   resources :articles
 
   get "/live", to: "live#index"
+  post "/live/event", to: "live#event"
 end

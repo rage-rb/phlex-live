@@ -4,6 +4,7 @@
 #   - SSE connection with automatic reconnect
 #   - Full-page morphing for SPA-like navigation
 #   - Targeted stream operations (replace, append, prepend, remove)
+#   - Server-side event dispatch (live_click)
 #   - Form interception (submits via fetch instead of full reload)
 #   - Browser history management (back/forward buttons)
 module LiveUpdateJs
@@ -90,7 +91,26 @@ module LiveUpdateJs
           });
         }
 
+        // --- Event delegation ---
+
+        // Click handler: intercepts two kinds of clicks:
+        //   1. Elements with data-live-click — dispatches a server-side event
+        //      by POSTing the component ID and event name to /live/event.
+        //   2. Same-origin <a> links — navigates via fetch + morph instead of
+        //      a full page load. Respects modifier keys (ctrl/meta/shift) for
+        //      opening links in new tabs.
         document.addEventListener("click", function(e) {
+          var liveEl = e.target.closest("[data-live-click]");
+          if (liveEl) {
+            e.preventDefault();
+            fetch("/live/event", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ id: liveEl.dataset.liveId, event: liveEl.dataset.liveClick })
+            });
+            return;
+          }
+
           var link = e.target.closest("a");
           if (!link) return;
           if (link.origin !== location.origin) return;
