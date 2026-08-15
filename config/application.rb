@@ -8,17 +8,14 @@ require "rage/all"
 Rage.configure do
   config.middleware.use Rack::MethodOverride
   config.router.form_actions = true
+  config.cable.protocol = :raw_websocket_json
 
+  # Renders a Phlex component to HTML. This serves the initial (JS-less) page load
+  # and direct URL visits; once the WebSocket is connected, the client drives all
+  # rendering over the socket via LiveChannel instead.
   config.renderer :phlex do |component, **props|
-    html = component.new(**props).call
-
-    if request.headers["Phlex-Live"]
-      Rage::SSE.broadcast("live", Rage::SSE.message(html, event: "update"))
-      head 200
-    else
-      headers["content-type"] = "text/html"
-      html
-    end
+    headers["content-type"] = "text/html"
+    component.new(**props).call
   end
 end
 

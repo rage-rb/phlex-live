@@ -1,4 +1,4 @@
-class Articles::Form < LiveView
+class Articles::Form < Phlex::HTML
   def initialize(article:)
     @article = article
     @errors = article.errors.full_messages

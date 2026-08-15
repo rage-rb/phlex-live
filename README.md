@@ -1,58 +1,55 @@
 # phlex-live
 
-Live Phlex components powered by Rage SSE. A proof of concept exploring LiveView-like reactivity for Ruby — event handlers and rendering logic in the same class, connected to the browser via Server-Sent Events.
+A proof of concept for **LiveView-style reactivity in Ruby**: stateful Phlex components
+that live for the length of a WebSocket connection and update themselves on the page in
+real time. Built on [Phlex](https://github.com/phlex-ruby/phlex) (views as Ruby classes),
+[Rage](https://github.com/rage-rb/rage) (fiber-based, native WebSockets), and
+[morphlex](https://github.com/yippee-fun/morphlex) (DOM morphing).
 
-## What this is
-
-A small CMS app demonstrating Phlex components that update themselves on the page in real time:
+The demo is a small article CMS. A component is the unit of both rendering and behavior —
+no template files, no per-interaction controllers, no hand-written client framework:
 
 ```ruby
 class Articles::Card < LiveView
-  live_id :article
+  def initialize(article:)
+    @article  = article
+    @expanded = false          # transient UI state, kept in memory for the session
+  end
 
   def view_template
     div(class: "card") do
-      span(class: "badge") { @article.status }
-      button(**live_click(:toggle_status)) { "Publish" }
+      button(**live_click(:toggle_status)) { @article.status == "draft" ? "Publish" : "Unpublish" }
+      button(**live_click(:toggle_details)) { @expanded ? "Show less" : "Show more" }
+      # ...
     end
   end
 
-  def toggle_status
-    new_status = @article.status == "draft" ? "published" : "draft"
-    @article.update!(status: new_status)
-    replace  # re-render, push to client via SSE, morph the DOM
+  def toggle_status   # persistent change: writes the DB, then re-renders
+    @article.update!(status: @article.status == "draft" ? "published" : "draft")
+    replace
+  end
+
+  def toggle_details  # transient change: in-memory only, survives across events
+    @expanded = !@expanded
+    replace
   end
 end
 ```
 
-No template files, no separate controller, no JS written. The component is the unit of both rendering and behavior.
+The component stays in memory on the server (in the connection's fiber storage) between
+events, so it can hold transient state and re-render itself without any id encoding or
+database reload.
 
-## How it works
+## Documentation
 
-1. Client establishes a persistent SSE connection to the server
-2. User interactions (clicks, form submissions) are intercepted by a small client-side script and sent as events
-3. The server reconstructs the component from its ID, calls the handler method, re-renders, and broadcasts the updated HTML via SSE
-4. [morphlex](https://github.com/yippee-fun/morphlex) patches the DOM
+See **[ARCHITECTURE.md](ARCHITECTURE.md)** for the motivation, what the system does, and a
+full walkthrough of how it works — the fiber model, the message protocol, the four request
+flows, and the current state (including what's not yet done, such as authentication).
 
-## What's implemented
-
-- **`LiveView` base class** — extends `Phlex::HTML`, wraps components in identifiable elements, reconstructs instances from their ID
-- **`live_id`** — declarative component identity (e.g. `live_id :article` → `Articles::Card--Article--123`)
-- **Stream operations** — `replace`, `append(target:)`, `prepend(target:)`, `remove`
-- **Server-side event handlers** — `live_click(:method_name)` binds UI events to component methods
-- **SPA-like navigation** — link clicks and form submissions morphed into the page without full reloads
-
-## Stack
-
-- [Rage](https://github.com/rage-rb/rage) — fiber-based Ruby framework with native SSE support
-- [Phlex](https://github.com/phlex-ruby/phlex) — Ruby component framework
-- [morphlex](https://github.com/yippee-fun/morphlex) — DOM morphing library
-- SQLite3 + ActiveRecord
-
-## Setup
+## Run it
 
 ```sh
 bundle install
 bundle exec rage db:setup
-bundle exec rage s
+bundle exec rage s          # http://localhost:3000
 ```

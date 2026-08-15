@@ -1,4 +1,4 @@
-class Articles::Index < LiveView
+class Articles::Index < Phlex::HTML
   def initialize(articles:)
     @articles = articles
   end

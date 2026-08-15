@@ -2,6 +2,6 @@ Rage.routes.draw do
   root to: "articles#index"
   resources :articles
 
-  get "/live", to: "live#index"
-  post "/live/event", to: "live#event"
+  # The live session: one WebSocket connection per browser tab, handled by LiveChannel.
+  mount Rage::Cable.application, at: "/live"
 end

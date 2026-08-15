@@ -1,96 +1,81 @@
-# Base class for all live-updatable Phlex components.
+# Base class for interactive, individually-updatable components ("live" components).
 #
-# Provides three core capabilities:
-#   1. Component identity — deterministic IDs that encode the component class and its
-#      model dependencies, enabling the server to reconstruct a component instance from
-#      its ID string (e.g. "Articles::Card--Article--42").
-#   2. Stream operations — replace, append, prepend, remove. These render the component
-#      and broadcast the resulting HTML to all connected browsers via SSE.
+# A LiveView differs from a plain Phlex view in three ways:
+#
+#   1. Identity — it is wrapped in a <div> with a generated id and registered in the
+#      connection's fiber-local registry (`Fiber[:live_components]`). The server can
+#      therefore find this exact instance again when the client dispatches an event
+#      to it. No id encoding, no database reconstruction — just a lookup.
+#
+#   2. State — the instance lives in fiber storage for the lifetime of the WebSocket
+#      connection, so it can hold transient UI state (e.g. "expanded?") across events.
+#      Navigating to a new page drops the registry, which unmounts it.
+#
+#   3. Reactivity — stream operations (replace/append/prepend/remove) re-render the
+#      component and push the HTML to its own connection over the socket, through the
+#      `Fiber[:live_update]` closure installed by LiveChannel#subscribed.
 class LiveView < Phlex::HTML
-  SEPARATOR = "--"
-  STREAM = "live"
+  # --- Stream operations: re-render and push to THIS connection. ---
 
-  include ServerSideHandlers
-
-  class << self
-    # Declares which constructor arguments form the component's identity.
-    # Each attribute should correspond to an ActiveRecord model instance.
-    #
-    # Example:
-    #   class Articles::Card < LiveView
-    #     live_id :article   # => ID will be "Articles::Card--Article--42"
-    #   end
-    def live_id(*attrs)
-      @live_id_attrs = attrs
-    end
-
-    def live_id_attrs
-      @live_id_attrs || []
-    end
-  end
-
-  # --- Stream operations ---
-  # These methods render the component to HTML and broadcast the result
-  # to all connected SSE clients as a "stream" event. The client-side JS
-  # in LiveUpdateJs handles each action type accordingly.
-
-  # Re-renders this component and morphs it in place on all connected clients.
-  # The client finds the existing DOM element by its ID and patches it.
+  # Re-render this component and morph it in place on the client.
   def replace
-    broadcast(action: "replace", html: call)
+    emit(action: "replace", html: render_html)
   end
 
-  # Renders this component and appends it to a target container element.
+  # Render this component and append it to a target container element.
   def append(target:)
-    broadcast(action: "append", target: target, html: call)
+    emit(action: "append", target: target, html: render_html)
   end
 
-  # Renders this component and prepends it to a target container element.
+  # Render this component and prepend it to a target container element.
   def prepend(target:)
-    broadcast(action: "prepend", target: target, html: call)
+    emit(action: "prepend", target: target, html: render_html)
   end
 
-  # Removes this component's DOM element from all connected clients.
-  # Does not re-render — only sends the element ID.
+  # Remove this component's element from the client and drop it from the registry.
   def remove
-    broadcast(action: "remove", id: live_component_id)
+    Fiber[:live_components]&.delete(@live_id)
+    emit(action: "remove", id: @live_id)
+  end
+
+  # Data attributes binding a DOM event to a server-side method on this instance:
+  #   button(**live_click(:toggle_status)) { "Publish" }
+  # The client sends the id + method name back over the socket; LiveChannel looks the
+  # instance up by id and invokes the method.
+  def live_click(event_name)
+    { data_live_click: event_name.to_s, data_live_id: @live_id }
   end
 
   private
 
-  def broadcast(payload)
-    Rage::SSE.broadcast(STREAM, Rage::SSE.message(payload.to_json, event: "stream"))
+  # Push a payload to the current connection. `Fiber[:live_update]` closes over this
+  # connection's `transmit` and only exists inside the WebSocket fiber.
+  def emit(payload)
+    Fiber[:live_update]&.call(payload)
   end
 
-  # Builds a deterministic ID string for this component instance.
-  # For ActiveRecord-backed attributes, encodes both the class name and record ID.
-  # Example: "Articles::Card--Article--42"
-  def live_component_id
-    parts = [self.class.name]
-
-    self.class.live_id_attrs.each do |attr|
-      value = instance_variable_get(:"@#{attr}")
-
-      if value.respond_to?(:id) && value.respond_to?(:class)
-        parts << value.class.name << value.id.to_s
-      else
-        parts << value.to_s
-      end
-    end
-
-    parts.join(SEPARATOR)
+  # Phlex refuses to render an instance more than once. Because a live component
+  # persists and re-renders on every update, we clear the render guard before each
+  # pass while keeping all other state (@article, @expanded, ...) intact.
+  def render_html
+    @_state = nil
+    call
   end
 
-  # Wraps the component's template in a <div> with the component's ID when
-  # the component has a live_id. This wrapper div is what enables targeted
-  # replace and remove operations — the client finds the element by this ID.
-  def around_template(&block)
-    if self.class.live_id_attrs.any?
-      div(id: live_component_id) do
-        super
-      end
-    else
-      super
-    end
+  # Wrap each live component in an identifiable element and register the instance so
+  # that later events can be routed back to it. Runs on every render; the id is
+  # assigned once and preserved, so re-renders keep targeting the same element.
+  def around_template
+    @live_id ||= LiveView.next_id
+    (Fiber[:live_components] ||= {})[@live_id] = self
+    div(id: @live_id) { super }
+  end
+
+  # Per-connection, per-page counter. The channel resets it before each page render,
+  # so ids are stable (live-1, live-2, ...) and match between the initial HTTP render
+  # and the WebSocket render.
+  def self.next_id
+    Fiber[:live_counter] = (Fiber[:live_counter] || 0) + 1
+    "live-#{Fiber[:live_counter]}"
   end
 end

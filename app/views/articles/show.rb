@@ -1,4 +1,4 @@
-class Articles::Show < LiveView
+class Articles::Show < Phlex::HTML
   def initialize(article:)
     @article = article
   end
