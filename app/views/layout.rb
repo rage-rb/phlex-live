@@ -20,7 +20,7 @@ class Layout < Phlex::HTML
             a(href: "/articles", class: "logo") { "CMS Admin" }
           end
         end
-        main(class: "container") do
+        main(class: "container", id: "main") do
           yield
         end
 
