@@ -8,7 +8,7 @@ class Articles::Card < LiveView
         message: "The \"#{@article.title}\" article status has been updated to '#{status}'"
       ).append(target: "main")
 
-      @article.status = status
+      @article.reload
       replace
     end
   end
