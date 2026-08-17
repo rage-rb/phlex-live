@@ -45,9 +45,12 @@ class LiveChannel < Rage::Cable::Channel
 
     app = Rage.with_middlewares(Rage::Application.new(Rage.__router), Rage.config.cable.middlewares)
     _, response_headers, response_body = app.call(env)
-    url = response_headers["location"] || path
 
-    transmit(action: "update", html: response_body[0], url: url)
+    if location_url = response_headers["location"]
+      transmit(action: "navigate", url: location_url)
+    else
+      transmit(action: "update", html: response_body[0], url: path)
+    end
   end
 
   # Dispatch an event to the live component that produced the clicked element. The

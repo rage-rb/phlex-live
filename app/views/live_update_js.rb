@@ -74,6 +74,9 @@ module LiveUpdateJs
               var el = document.getElementById(data.id);
               if (el) el.remove();
               break;
+            case "navigate":
+              navigate(data.url);
+              break;
           }
         }
 
