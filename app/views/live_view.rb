@@ -43,8 +43,11 @@ class LiveView < Phlex::HTML
   # The client sends the id + method name back over the socket; LiveChannel looks the
   # instance up by id and invokes the method.
   def live_click(event_name)
+    # TODO: support additional parameters
     { data_live_click: event_name.to_s, data_live_id: @live_id }
   end
+
+  # TODO: expose connected? to allow users skip parts for dead render
 
   private
 

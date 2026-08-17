@@ -65,16 +65,20 @@ class LiveChannel < Rage::Cable::Channel
     allowed = component.class.public_instance_methods(false) - [:view_template]
     return unless allowed.include?(event)
 
+    # TODO: batch responses
     component.public_send(event)
   end
 
   # Turns a { url, method, body } message into [method, path, params], honouring the
   # Rails-style `_method` override that HTML forms use for PATCH/DELETE.
   def parse_request(data)
+    # TODO: set QUERY_STRING instead
     uri = URI.parse(data["url"].to_s)
     params = {}
     params.merge!(URI.decode_www_form(uri.query).to_h) if uri.query
 
+    # TODO: set rack.input and IODINE_HAS_BODY instead - body
+    # can be serialized to JSON on the client upfront
     body = data["body"]
     params.merge!(URI.decode_www_form(body).to_h) if body && !body.empty?
 
