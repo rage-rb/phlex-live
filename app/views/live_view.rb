@@ -66,16 +66,8 @@ class LiveView < Phlex::HTML
   # that later events can be routed back to it. Runs on every render; the id is
   # assigned once and preserved, so re-renders keep targeting the same element.
   def around_template
-    @live_id ||= LiveView.next_id
+    @live_id ||= "el-#{object_id}"
     (Fiber[:live_components] ||= {})[@live_id] = self
     div(id: @live_id) { super }
-  end
-
-  # Per-connection, per-page counter. The channel resets it before each page render,
-  # so ids are stable (live-1, live-2, ...) and match between the initial HTTP render
-  # and the WebSocket render.
-  def self.next_id
-    Fiber[:live_counter] = (Fiber[:live_counter] || 0) + 1
-    "live-#{Fiber[:live_counter]}"
   end
 end

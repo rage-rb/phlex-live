@@ -42,7 +42,6 @@ class LiveChannel < Rage::Cable::Channel
     end
 
     Fiber[:live_components] = {}
-    Fiber[:live_counter] = 0
 
     app = Rage.with_middlewares(Rage::Application.new(Rage.__router), Rage.config.cable.middlewares)
     _, response_headers, response_body = app.call(env)
