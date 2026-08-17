@@ -125,9 +125,15 @@ module LiveUpdateJs
           if (url.origin !== location.origin) return;
 
           e.preventDefault();
-          navigate(url.pathname + url.search, {
-            method: (form.method || "POST").toUpperCase(),
-            body: new URLSearchParams(new FormData(form)).toString()
+
+          var formData = new FormData(form);
+          var data = Object.fromEntries(formData.entries());
+
+          navigate(url.pathname, {
+            method: (data._method || form.method || "post").toUpperCase(),
+            body: JSON.stringify(data),
+            query: location.search,
+            hash: location.hash,
           });
         });
 

@@ -29,27 +29,16 @@ class LiveChannel < Rage::Cable::Channel
   # unmounts the previous page's components — we simply drop the old registry, and the
   # fresh render repopulates it.
   def navigate(data)
-    method, path, params = parse_request(data)
-
-    env = __connection.env.dup
-    env["rack.upgrade?"] = env["rack.upgrade"] = env["rage.request_id"] = nil
-
-    env["PATH_INFO"] = path
-    env["REQUEST_METHOD"] = method
-
-    if params.any?
-      env["QUERY_STRING"] = Rack::Utils.build_nested_query(params)
-    end
-
-    Fiber[:live_components] = {}
+    Fiber[:live_components].clear
 
     app = Rage.with_middlewares(Rage::Application.new(Rage.__router), Rage.config.cable.middlewares)
+    env = parse_request(data)
     _, response_headers, response_body = app.call(env)
 
     if location_url = response_headers["location"]
       transmit(action: "navigate", url: location_url)
     else
-      transmit(action: "update", html: response_body[0], url: path)
+      transmit(action: "update", html: response_body[0])
     end
   end
 
@@ -69,20 +58,21 @@ class LiveChannel < Rage::Cable::Channel
     component.public_send(event)
   end
 
-  # Turns a { url, method, body } message into [method, path, params], honouring the
-  # Rails-style `_method` override that HTML forms use for PATCH/DELETE.
+  # Build the Rack env hash representing the request
   def parse_request(data)
-    # TODO: set QUERY_STRING instead
-    uri = URI.parse(data["url"].to_s)
-    params = {}
-    params.merge!(URI.decode_www_form(uri.query).to_h) if uri.query
+    env = __connection.env.dup
+    env["rack.upgrade?"] = env["rack.upgrade"] = env["rage.request_id"] = nil
 
-    # TODO: set rack.input and IODINE_HAS_BODY instead - body
-    # can be serialized to JSON on the client upfront
-    body = data["body"]
-    params.merge!(URI.decode_www_form(body).to_h) if body && !body.empty?
+    env["PATH_INFO"] = data["url"]
+    env["REQUEST_METHOD"] = data["method"] || "GET"
+    env["QUERY_STRING"] = data["query"] || ""
 
-    method = (params.delete("_method") || data["method"] || "GET").to_s.upcase
-    [method, uri.path, params]
+    if (body = data["body"])
+      env["rack.input"] = StringIO.new(body)
+      env["IODINE_HAS_BODY"] = true
+      env["CONTENT_TYPE"] = "application/json"
+    end
+
+    env
   end
 end
