@@ -3,13 +3,14 @@
 A proof of concept for **LiveView-style reactivity in Ruby**, built from:
 
 - **[Phlex](https://github.com/phlex-ruby/phlex)** — views are plain Ruby classes.
-- **[Rage](https://github.com/rage-rb/rage)** — a fiber-based framework with native
+- **[Rage](https://github.com/rage-rb/rage)** — a Rails-compatible fiber-based framework with native
   WebSockets (`Rage::Cable`).
 - **[morphlex](https://github.com/yippee-fun/morphlex)** — DOM morphing in the browser.
 
-The demo is a small article CMS. Interactions and navigation happen over a single
-WebSocket per tab; the server renders Phlex components and pushes HTML back; the browser
-morphs it into the page. No template files, no per-interaction controllers, no
+The demo is a small article CMS. Once the page loads, a single WebSocket per tab carries
+everything: navigation is dispatched to ordinary **Rage controllers**, and interactive
+updates are dispatched to **Phlex component methods** — both over the same socket, with the
+server rendering HTML and the browser morphing it into the page. No template files, no
 hand-written client framework.
 
 ---
@@ -21,9 +22,9 @@ worked, but it had two properties we wanted to change:
 
 1. **Statelessness forced identity into the DOM.** With SSE there is no durable
    server-side handle on a component. To route a click back to "the card for article
-   42," the component encoded its identity into a string (`Articles::Card--Article--42`),
+   42," the component encoded its identity into a `live_id` string (`Articles::Card--Article--42`),
    which the server parsed and used to *rebuild* the component from the database on every
-   interaction. It was clever but hard to reason about, and every event meant a fresh
+   interaction. It was hard to reason about, and every event meant a fresh
    reload from the DB.
 
 2. **No place to keep transient UI state.** Because the component was reconstructed each
@@ -41,7 +42,7 @@ Switching the transport to a **WebSocket** changes the model fundamentally:
 - **Components can simply *stay in memory*.** A rendered component is kept in the
   connection's fiber storage and re-used across events. This **removes `live_id`
   entirely** (identity is just a registry key now) and lets components **hold transient UI
-  state** — moving the system from the Hotwire category into the LiveView category.
+  state**.
 
 ---
 
@@ -66,26 +67,44 @@ A CMS admin for articles (list / view / create / edit / delete). Concretely:
 
 ```
   Browser                                      Rage server
-  ┌───────────────────────────┐                ┌──────────────────────────────────┐
-  │ 1. GET /articles          │ ─ HTTP ──────► │ ArticlesController#index          │
-  │    (first paint)          │ ◄───────────── │ → dead-rendered HTML              │
-  │                           │     HTML       │                                   │
-  │ 2. new WebSocket(         │                │                                   │
-  │      "/live/live")        │ ═ WS open ════►│ LiveChannel#subscribed            │
-  │                           │                │   Fiber[:live_update] = transmit  │  one fiber
-  │ 3. {type:"navigate",      │ ═ WS msg ═════►│ LiveChannel#receive → navigate    │  per
-  │     url:"/articles"}      │                │   render page, register children  │  connection
-  │    (hydrate)              │ ◄═ WS msg ═════│   {action:"update", html, url}    │
-  │    morph document         │                │                                   │
-  │                           │                │  Fiber[:live_components] =         │
-  │                           │                │    {"live-1"=>#<Card…>, …}         │
-  │ 4. click Publish          │ ═ WS msg ═════►│ receive → event                   │
-  │    {type:"event",         │                │   comp = registry["live-1"]       │
-  │     id:"live-1",          │                │   comp.toggle_status → replace    │
-  │     event:"toggle_status"}│ ◄═ WS msg ═════│   {action:"replace", html}        │
-  │    morph #live-1          │                │                                   │
-  └───────────────────────────┘                └──────────────────────────────────┘
+  ┌───────────────────────────┐                ┌─────────────────────────────────────┐
+  │ 1. GET /articles          │ ─ HTTP ──────► │ router → ArticlesController#index    │
+  │    (first paint)          │ ◄───────────── │ → dead-rendered HTML                │
+  │                           │     HTML       │                                     │
+  │ 2. new WebSocket(         │                │                                     │
+  │      "/live/live")        │ ═ WS open ════►│ LiveChannel#subscribed              │
+  │                           │                │   Fiber[:live_update] = transmit    │  one
+  │ 3. {type:"navigate",      │ ═ WS msg ═════►│ receive → navigate                  │  fiber
+  │     url:"/articles"}      │                │   build a Rack env from the message │  per
+  │    (hydrate / link /      │                │   app.call(env) ── in THIS fiber ──┐│  conn
+  │     form / back-fwd)      │                │     router → ArticlesController     ││
+  │                           │                │       renders Phlex; LiveView      ││
+  │                           │                │       children self-register    ◄──┘│
+  │                           │ ◄═ WS msg ═════│   {action:"update", html, url}      │
+  │    morph document         │                │   Fiber[:live_components] =          │
+  │                           │                │     {"el-8420"=>#<Card…>, …}         │
+  │ 4. click Publish          │ ═ WS msg ═════►│ receive → event                     │
+  │    {type:"event",         │                │   comp = registry["el-8420"]        │
+  │     id:"el-8420",         │                │   comp.toggle_status → replace      │
+  │     event:"toggle_status"}│ ◄═ WS msg ═════│   {action:"replace", html}          │
+  │    morph #el-8420         │                │                                     │
+  └───────────────────────────┘                └─────────────────────────────────────┘
 ```
+
+### Where the logic lives
+
+The design splits cleanly along one line — *is this a page transition, or an in-place
+update?*
+
+- **Controllers own routing, business logic, and page rendering.** The `resources
+  :articles` routes and `ArticlesController` are completely ordinary. They serve the
+  initial HTTP load *and* every socket navigation — the **same code**, no duplication.
+- **`LiveView` Phlex components own transient UI state** (and any behaviour attached to it,
+  via event-handler methods). They persist in the connection's fiber storage between
+  events.
+- **The WebSocket connection multiplexes both.** After the first paint, the client sends
+  every interaction over the one socket; the framework routes `navigate` messages to
+  controllers and `event` messages to component methods.
 
 ### Why Rage: one connection = one persistent fiber
 
@@ -100,25 +119,30 @@ and blocking ActiveRecord calls yield to the scheduler instead of pinning a thre
 
 Three things live in that fiber's storage for the life of the connection:
 
-| Key                     | What it is                                                        |
-|-------------------------|-------------------------------------------------------------------|
-| `Fiber[:live_update]`   | A closure over this connection's `transmit` — how components push. |
-| `Fiber[:live_components]` | Registry: `{ "live-1" => <component>, … }` — the mounted components. |
-| `Fiber[:live_counter]`  | Per-page counter used to generate stable component ids.           |
+| Key                       | What it is                                                          |
+|---------------------------|--------------------------------------------------------------------|
+| `Fiber[:live_update]`     | A closure over this connection's `transmit` — how components push.  |
+| `Fiber[:live_components]` | Registry: `{ "el-8420" => <component>, … }` — the mounted components. |
+| `Fiber[:live_cleanup]`    | Array of teardown lambdas (e.g. `Rage::Signal.off` calls) run on navigation and disconnect. |
+
+This is also what lets navigation delegate to a controller *and* have the rendered
+components register themselves here (see below): the controller runs **in this same
+fiber**, so `Fiber[:live_components]` is the one the connection will read on the next event.
 
 ### The building blocks
 
 | Piece | File | Responsibility |
 |-------|------|----------------|
-| **`LiveChannel`** | `app/channels/live_channel.rb` | The live session. Installs the fiber storage on `subscribe`; on `receive`, dispatches `navigate` (render a page) or `event` (invoke a component method). |
-| **`LiveView`** | `app/views/live_view.rb` | Base class for interactive components. Generates an id, registers the instance, wraps it in a `<div id>`, and provides stream ops (`replace`/`append`/`prepend`/`remove`) + `live_click`. |
-| **`LiveUpdateJs`** | `app/views/live_update_js.rb` | ~130 lines of dependency-light client JS: WebSocket connect/reconnect, event delegation (clicks, forms, popstate), and applying server messages via morphlex. |
-| **`:phlex` renderer** | `config/application.rb` | Renders a component to HTML for the initial (JS-less) load. |
-| **`ArticlesController`** | `app/controllers/articles_controller.rb` | Ordinary HTTP controller for first paint / no-JS fallback. |
+| **`LiveChannel`** | `app/channels/live_channel.rb` | The live session. Installs the fiber storage on `subscribe`; on `receive`, **delegates a `navigate` to the Rage app (controllers)** or dispatches an `event` to a component method. |
+| **`ArticlesController`** | `app/controllers/articles_controller.rb` | Ordinary Rage controller. Serves **both** the initial HTTP load and every socket navigation — one implementation, two entry points. |
+| **`LiveView`** | `app/views/live_view.rb` | Base class for interactive components. Generates an id, registers the instance, wraps it in a `<div id>`, and provides stream ops (`replace`/`append`/`prepend`/`remove`) + `live_click`. Includes `LiveTracking`. |
+| **`LiveTracking`** | `app/views/live_tracking.rb` | The `live` helper: subscribes a component to model changes via `Rage::Signal`, auto-reloads via GlobalID, re-renders, and registers cleanup. Also provides `LiveTracking.broadcast` for models and `live?` for dead-vs-live detection. |
+| **`LiveUpdateJs`** | `app/views/live_update_js.rb` | ~140 lines of dependency-light client JS: WebSocket connect/reconnect, event delegation (clicks, forms, popstate), and applying server messages via morphlex. |
+| **`:phlex` renderer** | `config/application.rb` | Renders a component to HTML — used by controllers for both HTTP and socket rendering. |
 
-`Articles::Index`, `Show`, and `Form` are **plain `Phlex::HTML` pages**. Only
-`Articles::Card` is a **`LiveView`** — the distinction is simply "is this an individually
-updatable, stateful fragment?"
+`Articles::Index` and `Form` are **plain `Phlex::HTML` pages**. `Articles::Card`,
+`Articles::Show`, and `Notification` are **`LiveView`s** — the distinction is simply "is
+this an individually updatable, stateful fragment?"
 
 ### The message protocol
 
@@ -128,17 +152,18 @@ All server↔client traffic is JSON over the one socket.
 
 ```jsonc
 { "type": "navigate", "url": "/articles/42", "method": "GET" }        // link / form / popstate
-{ "type": "event",    "id": "live-1", "event": "toggle_status" }      // a live_click
+{ "type": "event",    "id": "el-8420", "event": "toggle_status" }     // a live_click
 ```
 
 **Server → client** (via `Fiber[:live_update]` → `transmit`, keyed on `action`):
 
 ```jsonc
 { "action": "update",  "html": "<!doctype…>", "url": "/articles/42" } // full-page morph
-{ "action": "replace", "html": "<div id='live-1'>…</div>" }          // targeted morph
-{ "action": "append",  "target": "list", "html": "…" }
-{ "action": "prepend", "target": "list", "html": "…" }
-{ "action": "remove",  "id": "live-1" }
+{ "action": "replace", "html": "<div id='el-8420'>…</div>" }         // targeted morph
+{ "action": "navigate", "url": "/articles/42" }                     // redirect
+{ "action": "append",  "target": "main", "html": "…" }
+{ "action": "prepend", "target": "main", "html": "…" }
+{ "action": "remove",  "id": "el-8420" }
 ```
 
 ### The four flows
@@ -156,13 +181,40 @@ The server renders that page **inside the connection fiber**, which registers ea
 client morphs it over the identical dead-rendered DOM — visually a no-op, but now the
 server holds live component instances for this tab.
 
-**3. Navigation.** A link click, form submit, or back/forward sends a `navigate` message.
-`LiveChannel#dispatch` maps `(method, path, params)` to a root component (or performs a
-mutation and resolves the redirect target), the channel **resets the registry** (which
-*unmounts* the previous page's components), re-renders, and pushes an `update` with the
-canonical `url` for the client to place in history. Rails-style `_method` overrides from
-forms (`PATCH`/`DELETE`) are honored; validation failures re-render the form in place with
-`url: nil` so the address bar is left untouched.
+**3. Navigation — delegated to the Rage app.** A link click, form submit, or back/forward
+sends a `navigate` message. Rather than route it itself, `LiveChannel` **reconstructs an
+HTTP request and hands it to the Rage router**:
+
+```ruby
+def parse_request(data)
+  # ...
+  env["PATH_INFO"] = data["url"]
+  env["REQUEST_METHOD"] = data["method"] || "GET"
+  env["QUERY_STRING"] = data["query"] || ""
+  # ...
+
+  env
+end
+
+def navigate(data)
+  # ...
+  app = Rage.with_middlewares(Rage::Application.new(Rage.__router), Rage.config.cable.middlewares)
+  env = parse_request(data)
+  _, response_headers, response_body = app.call(env)
+  # ...
+end
+```
+
+Two things make this work:
+
+- **It runs in the current fiber.** The app is wrapped in `Rage.config.cable.middlewares`,
+  *not* the HTTP stack — so it deliberately omits `Rage::FiberWrapper` (which would spawn a
+  new request fiber). `app.call(env)` therefore executes synchronously in this connection's
+  fiber, and every `LiveView` the controller renders registers itself in *this*
+  `Fiber[:live_components]`.
+- **Redirects become the URL.** `ArticlesController` still uses `redirect_to` after a
+  mutation; the channel reads the `Location` header and returns it as the canonical `url`
+  for the client to place in history.
 
 **4. Events.** A `data-live-click` element sends an `event` message with the component id
 and method name. The channel looks the instance up in the registry — **it is still in
@@ -172,17 +224,23 @@ change to *this* connection.
 
 ### Identity and state without `live_id`
 
-When a `LiveView` renders, `around_template` assigns it a stable per-page id
-(`live-1`, `live-2`, …), stores the **actual instance** in `Fiber[:live_components]`, and
-wraps its output in `<div id="live-1">`:
+When a `LiveView` renders, `around_template` assigns it an id derived from the Ruby
+instance itself (`el-#{object_id}`), stores the **actual instance** in
+`Fiber[:live_components]`, and wraps its output in `<div id="el-8420">`:
 
 ```ruby
 def around_template
-  @live_id ||= LiveView.next_id
+  @live_id ||= "el-#{object_id}"
   (Fiber[:live_components] ||= {})[@live_id] = self
   div(id: @live_id) { super }
 end
 ```
+
+The id is tied to the instance, so it is stable for that object's lifetime and needs no
+per-page counter or reset — a component keeps the same element id across every re-render,
+and freshly created components (e.g. an appended one) get a fresh id automatically. The ids
+from the initial dead render and the hydration render differ, which is fine: hydration
+sends a whole-document `update` that morphlex reconciles by structure anyway.
 
 Identity is now just a hash key into live objects — no string encoding, no DB round-trip
 to reconstruct. And because the instance persists, it can hold transient state. `Card`
@@ -217,6 +275,69 @@ def render_html
 end
 ```
 
+### Cross-connection updates — the `live` helper
+
+Everything above pushes only to the connection that triggered it. To let *one* user's
+change reach *other* users' open tabs, the app uses `Rage::Signal`, a small process-wide
+pub/sub (marked "in-progress PoC" in Rage itself). The raw `Rage::Signal` API
+(`on`/`off`/`emit`) is wrapped by the **`LiveTracking`** module so that components never
+interact with it directly.
+
+**Broadcasting.** A model calls `LiveTracking.broadcast(self)` in an `after_commit`
+callback. The method encodes the model's identity as a
+[GlobalID](https://github.com/rails/globalid) and emits it via `Rage::Signal`:
+
+```ruby
+class Article < ApplicationRecord
+  after_commit :broadcast_status
+
+  def broadcast_status
+    LiveTracking.broadcast(self) if previous_changes.key?("status")
+  end
+end
+```
+
+**Subscribing.** A component uses the `live` helper in its initializer. `live` wraps the
+model in a `SimpleDelegator`, subscribes to signals for that model, and — when a signal
+arrives — locates a fresh copy via GlobalID, swaps it into the delegator, runs an optional
+block (for side effects like toasts), and re-renders the component:
+
+```ruby
+class Articles::Card < LiveView
+  def initialize(article:)
+    @article = live(article) do |article|
+      Notification.new(
+        message: "…updated to '#{article.status}'"
+      ).append(target: "main")
+    end
+  end
+end
+```
+
+When no extra side effect is needed, a bare `@article = live(article)` is enough — the
+component will still auto-reload and re-render on changes.
+
+During a dead (HTTP) render, `live` is a no-op: it returns the model unwrapped so the same
+component code works for both the initial page load and the WebSocket session.
+
+**Cleanup.** Each `live` call pushes a teardown lambda (`Rage::Signal.off`) into
+`Fiber[:live_cleanup]`. `LiveChannel` runs these on every navigation (unmount the old page
+before rendering the new one) and on disconnect, so subscriptions no longer accumulate.
+
+The mechanism that makes signals land on the right socket: `Rage::Signal.on` runs each
+subscriber's callback in a per-connection worker fiber created with `Fiber.schedule`, which
+**inherits the connection fiber's storage** — so the callback still sees this connection's
+`Fiber[:live_update]` and can `append`/`replace` straight to it. So a publish from anywhere
+fans out: every connection that rendered that article re-renders the component (and shows a
+toast if the component's `live` block requests one).
+
+**Broadcasting facts.** The conventional way to fan a change out — render HTML once in the
+`after_commit` and broadcast those bytes for every subscriber to swap in — is deliberately
+not what happens here. `LiveTracking.broadcast(self)` emits a fact (i.e. only the model's identity — a GlobalID); the payload carries no markup and knows nothing about views. Each per-connection component decides how to re-render itself (honoring its own in-memory state) and pushes only to its own socket.
+
+So a single publish becomes **N independent re-renders, each correct for its own UI**, rather
+than one render copied into N identical DOMs.
+
 ### Security
 
 `/live` events are a remote-method-call surface, so dispatch is deliberately narrow: only
@@ -240,11 +361,14 @@ is unreachable from the client.
 - WebSocket transport via `Rage::Cable` (`:raw_websocket_json`) — native browser
   `WebSocket`, no client library.
 - Stateful, in-memory components stored per connection in fiber storage.
-- `live_id` removed; identity is a registry key.
+- `live_id` removed; identity is the instance's `object_id`.
 - Transient UI state on components (`toggle_details` / `@expanded`).
-- SPA navigation over the socket (links, forms, back/forward, `_method` overrides,
-  redirects, validation-failure re-render).
+- **Navigation delegated to the Rage app** — one controller implementation serves both the
+  HTTP load and every socket navigation (links, forms, back/forward, `_method` overrides).
 - Targeted stream ops (`replace` / `append` / `prepend` / `remove`) + `live_click`.
+- Cross-connection updates via `Rage::Signal` (experimental) + toast `Notification`s.
+- `live` helper for declarative model tracking — auto-reload, re-render, optional side-effect block, with subscription cleanup on navigation and disconnect.
+- `live?` helper to distinguish live (WebSocket) renders from dead (HTTP) renders.
 - Progressive enhancement: HTTP dead render for first paint / no-JS.
 
 **Not yet done / known limitations**
@@ -252,13 +376,13 @@ is unreachable from the client.
   home for it — add `app/channels/rage_cable/connection.rb` with
   `identified_by :current_user` and `reject_unauthorized_connection`. (Boot currently logs
   a warning that no connection class is defined, so all connections are accepted.)
-- **Updates are per-connection, not broadcast.** A component pushes only to *its own*
-  socket via `Fiber[:live_update]`. There is no cross-client fan-out (user A does not see
-  user B's change). For that you'd add `stream_for current_user` + `broadcast_to`. For a
-  single-user CMS admin this per-session behavior is the correct default.
-- **Navigation dispatch mirrors `ArticlesController`.** `LiveChannel#dispatch` re-derives
-  routing/CRUD that the HTTP controller also expresses. A fuller implementation would
-  share one router between HTTP and the socket.
+- **Mutation redirects don't carry a body.** A `redirect_to` (create/update/delete) returns
+  a 302 with an empty body, so the `navigate` message carries the target `url` but no HTML;
+  the target page isn't rendered as part of the same round-trip yet.
+- **`Rage::Signal` is a PoC.** Each connection's subscriber fiber captures fiber storage
+  by inheritance — fine for a demo, not production-ready fan-out. Subscriptions are now
+  cleaned up on navigation and disconnect via `Fiber[:live_cleanup]`, but a durable version
+  would scope streams to a user.
 - **No server-side diffing.** The whole component (or page) is re-rendered and morphlex
   computes the patch in the browser — fine for small components, wasteful for large ones.
 - **Reconnect re-hydrates from scratch.** A dropped socket re-mounts the page, so transient
@@ -271,19 +395,22 @@ is unreachable from the client.
 ```
 app/
   channels/
-    live_channel.rb        # the live session: subscribe + navigate + event dispatch
+    live_channel.rb        # the live session: subscribe, delegate navigation, event dispatch
   controllers/
-    articles_controller.rb # HTTP dead render / no-JS fallback
+    articles_controller.rb # ordinary controller — serves HTTP load AND socket navigations
     application_controller.rb
   models/
-    article.rb
+    article.rb             # after_commit -> Rage::Signal.emit on status change
   views/
     live_view.rb           # LiveView base: identity, registry, stream ops, live_click
+    live_tracking.rb       # `live` helper: model tracking, broadcast, cleanup, live?
     live_update_js.rb       # client: WebSocket + event delegation + morphlex
-    layout.rb              # shared HTML shell; embeds live_update_scripts
+    layout.rb              # shared HTML shell (main#main); embeds live_update_scripts
+    notification.rb        # LiveView toast, appended on a Rage::Signal event
     articles/
-      card.rb              # the one LiveView (toggle_status + toggle_details)
-      index.rb  show.rb  form.rb   # plain Phlex pages
+      card.rb              # LiveView: toggle_status (persistent) + toggle_details (transient)
+      show.rb              # LiveView: subscribes to article_changed signals
+      index.rb  form.rb    # plain Phlex pages
 config/
   application.rb           # :phlex renderer + config.cable.protocol = :raw_websocket_json
   routes.rb               # resources :articles + mount Rage::Cable.application at "/live"
