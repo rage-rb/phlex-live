@@ -1,0 +1,6 @@
+# flyctl launch added from .gitignore
+**/Gemfile.lock
+**/.DS_Store
+**/storage
+**/.claude
+fly.toml
