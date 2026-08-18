@@ -9,7 +9,7 @@ class Article < ApplicationRecord
 
   def broadcast_status
     if self.previous_changes.key?("status")
-      Rage::Signal.emit("article_changed:#{id}", status)
+      LiveTracking.broadcast(self)
     end
   end
 end

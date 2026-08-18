@@ -12,6 +12,13 @@ class LiveChannel < Rage::Cable::Channel
     # fiber can push an update straight to this client via `Fiber[:live_update].call`.
     Fiber[:live_update] = ->(payload) { transmit(payload) }
     Fiber[:live_components] = {}
+    Fiber[:live_cleanup] = []
+  end
+
+  # Tear down signal subscriptions when the WebSocket disconnects, so stale
+  # callbacks don't fire into a dead connection.
+  def unsubscribed
+    cleanup_live_components
   end
 
   # Single client -> server entrypoint. `type` distinguishes a page navigation from an
@@ -29,7 +36,7 @@ class LiveChannel < Rage::Cable::Channel
   # unmounts the previous page's components — we simply drop the old registry, and the
   # fresh render repopulates it.
   def navigate(data)
-    Fiber[:live_components].clear
+    cleanup_live_components
 
     app = Rage.with_middlewares(Rage::Application.new(Rage.__router), Rage.config.cable.middlewares)
     env = parse_request(data)
@@ -74,5 +81,14 @@ class LiveChannel < Rage::Cable::Channel
     end
 
     env
+  end
+
+  # Unsubscribe all signal listeners, then drop the component registry. Called on
+  # both navigation (unmount the old page before rendering the new one) and
+  # disconnect (final teardown). Cleanup must run before the registry is cleared
+  # so that the lambdas registered by `live` can still reference their models.
+  def cleanup_live_components
+    Fiber[:live_cleanup].each(&:call).clear
+    Fiber[:live_components].clear
   end
 end

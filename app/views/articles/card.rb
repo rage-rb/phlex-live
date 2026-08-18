@@ -1,16 +1,12 @@
 class Articles::Card < LiveView
   def initialize(article:)
-    @article = article
-    @expanded = false
-
-    Rage::Signal.on("article_changed:#{@article.id}") do |status|
+    @article = live(article) do |article|
       Notification.new(
-        message: "The \"#{@article.title}\" article status has been updated to '#{status}'"
+        message: "The \"#{article.title}\" article status has been updated to '#{article.status}'"
       ).append(target: "main")
-
-      @article.reload
-      replace
     end
+
+    @expanded = false
   end
 
   def view_template

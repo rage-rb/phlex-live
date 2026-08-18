@@ -1,15 +1,6 @@
 class Articles::Show < LiveView
   def initialize(article:)
-    @article = article
-
-    Rage::Signal.on("article_changed:#{@article.id}") do |status|
-      Notification.new(
-        message: "The \"#{@article.title}\" article status has been updated to '#{status}'"
-      ).append(target: "main")
-
-      @article.reload
-      replace
-    end
+    @article = live(article)
   end
 
   def view_template
