@@ -9,4 +9,6 @@ Rage.configure do
   config.logger = Rage::Logger.new(STDOUT)
   config.log_level = Logger::INFO
   config.log_formatter = Rage::JSONFormatter.new
+
+  config.cable.allowed_request_origins = ["https://phlex-live-eae0373a0ce7.fly.dev"]
 end
