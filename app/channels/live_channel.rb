@@ -57,12 +57,7 @@ class LiveChannel < Rage::Cable::Channel
     return unless component
 
     event = data["event"].to_sym
-    # Only public methods defined directly on the component are callable (RPC-style).
-    allowed = component.class.public_instance_methods(false) - [:view_template]
-    return unless allowed.include?(event)
-
-    # TODO: batch responses
-    component.public_send(event)
+    component.handle_event(event)
   end
 
   # Build the Rack env hash representing the request

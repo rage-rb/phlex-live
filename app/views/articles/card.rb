@@ -43,7 +43,6 @@ class Articles::Card < LiveView
   def toggle_status
     new_status = @article.status == "draft" ? "published" : "draft"
     @article.update!(status: new_status)
-    replace
   end
 
   # Transient change: `@expanded` lives only in this component's memory, for as long
@@ -51,6 +50,5 @@ class Articles::Card < LiveView
   # capability that the stateful (WebSocket) model unlocks over the stateless one.
   def toggle_details
     @expanded = !@expanded
-    replace
   end
 end

@@ -85,7 +85,7 @@ A CMS admin for articles (list / view / create / edit / delete). Concretely:
   │                           │                │     {"el-8420"=>#<Card…>, …}         │
   │ 4. click Publish          │ ═ WS msg ═════►│ receive → event                     │
   │    {type:"event",         │                │   comp = registry["el-8420"]        │
-  │     id:"el-8420",         │                │   comp.toggle_status → replace      │
+  │     id:"el-8420",         │                │   comp.handle_event → auto-replace  │
   │     event:"toggle_status"}│ ◄═ WS msg ═════│   {action:"replace", html}          │
   │    morph #el-8420         │                │                                     │
   └───────────────────────────┘                └─────────────────────────────────────┘
@@ -133,9 +133,9 @@ fiber**, so `Fiber[:live_state][:components]` is the one the connection will rea
 
 | Piece | File | Responsibility |
 |-------|------|----------------|
-| **`LiveChannel`** | `app/channels/live_channel.rb` | The live session. Installs the fiber storage on `subscribe`; on `receive`, **delegates a `navigate` to the Rage app (controllers)** or dispatches an `event` to a component method. |
+| **`LiveChannel`** | `app/channels/live_channel.rb` | The live session. Installs the fiber storage on `subscribe`; on `receive`, **delegates a `navigate` to the Rage app (controllers)** or delegates an `event` to the component's `handle_event`. |
 | **`ArticlesController`** | `app/controllers/articles_controller.rb` | Ordinary Rage controller. Serves **both** the initial HTTP load and every socket navigation — one implementation, two entry points. |
-| **`LiveView`** | `app/views/live_view.rb` | Base class for interactive components. Generates an id, registers the instance, wraps it in a `<div id>`, and provides stream ops (`replace`/`append`/`prepend`/`remove`) + `live_click`. Includes `ModelStream`. |
+| **`LiveView`** | `app/views/live_view.rb` | Base class for interactive components. Generates an id, registers the instance, wraps it in a `<div id>`, handles event dispatch with auto-`replace`, and provides stream ops (`replace`/`append`/`prepend`/`remove`) + `live_click`. Includes `ModelStream`. |
 | **`ModelStream`** | `app/views/model_stream.rb` | The `stream` helper: subscribes a component to model changes via `Rage::PubSub`, auto-reloads via GlobalID, re-renders, and registers cleanup. Also provides `ModelStream.emit` for models. |
 | **`LiveUpdateJs`** | `app/views/live_update_js.rb` | ~140 lines of dependency-light client JS: WebSocket connect/reconnect, event delegation (clicks, forms, popstate), and applying server messages via morphlex. |
 | **`:phlex` renderer** | `config/application.rb` | Renders a component to HTML — used by controllers for both HTTP and socket rendering. |
@@ -218,9 +218,9 @@ Two things make this work:
 
 **4. Events.** A `data-live-click` element sends an `event` message with the component id
 and method name. The channel looks the instance up in the registry — **it is still in
-memory, with all its state** — checks the method is allowed, and calls it. The method
-mutates state and calls a stream op (e.g. `replace`), which re-renders and pushes the
-change to *this* connection.
+memory, with all its state** — and delegates to `handle_event`. The method mutates state;
+if it doesn't explicitly call a stream op, `replace` is called automatically after the
+method returns, re-rendering and pushing the change to *this* connection.
 
 ### Identity and state without `live_id`
 
@@ -249,14 +249,15 @@ demonstrates both kinds side by side:
 ```ruby
 def toggle_status   # persistent: writes the DB, then re-renders
   @article.update!(status: @article.status == "draft" ? "published" : "draft")
-  replace
 end
 
 def toggle_details  # transient: in-memory only, survives across events
   @expanded = !@expanded
-  replace
 end
 ```
+
+Event handlers don't need to call `replace` explicitly — `handle_event` calls it
+automatically if the method didn't invoke any stream operation.
 
 Toggling "Show more" repeatedly flips `@expanded` on the same instance across independent
 events. Navigating away resets the registry, which is exactly the right unmount semantics.
@@ -344,12 +345,17 @@ than one render copied into N identical DOMs.
 
 `/live` events are a remote-method-call surface, so dispatch is deliberately narrow: only
 **public methods defined directly on the component class** are callable, and
-`view_template` is excluded.
+`view_template` is excluded. This check lives in `LiveView#handle_event`:
 
 ```ruby
-allowed = component.class.public_instance_methods(false) - [:view_template]
-return unless allowed.include?(event)
-component.public_send(event)
+def handle_event(event)
+  allowed = self.class.public_instance_methods(false) - [:view_template]
+  return unless allowed.include?(event)
+
+  @_streamed = false
+  public_send(event)
+  replace unless @_streamed
+end
 ```
 
 Everything inherited from `LiveView` / `Phlex::HTML` / `Object` (including the stream ops)
@@ -368,6 +374,7 @@ is unreachable from the client.
 - **Navigation delegated to the Rage app** — one controller implementation serves both the
   HTTP load and every socket navigation (links, forms, back/forward, `_method` overrides).
 - Targeted stream ops (`replace` / `append` / `prepend` / `remove`) + `live_click`.
+- Auto-`replace` after event handlers — if a handler doesn't call a stream op, `replace` is called automatically.
 - Cross-connection updates via `Rage::PubSub` + toast `Notification`s.
 - `stream` helper for declarative model tracking — auto-reload, re-render, optional side-effect block, with subscription cleanup on navigation and disconnect.
 - Progressive enhancement: HTTP dead render for first paint / no-JS.

@@ -17,6 +17,18 @@
 class LiveView < Phlex::HTML
   include ModelStream
 
+  def handle_event(event)
+    allowed = self.class.public_instance_methods(false) - [:view_template]
+    return unless allowed.include?(event)
+
+    @_streamed = false
+    public_send(event)
+    replace unless @_streamed
+
+  ensure
+    @_streamed = false
+  end
+
   # --- Stream operations: re-render and push to THIS connection. ---
 
   # Re-render this component and morph it in place on the client.
@@ -57,6 +69,8 @@ class LiveView < Phlex::HTML
   # this connection's `transmit` and only exists inside the WebSocket fiber.
   def emit(payload)
     return unless Fiber[:live_state]
+
+    @_streamed = true
     Fiber[:live_state][:update].call(payload)
   end
 
