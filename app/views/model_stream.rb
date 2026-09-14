@@ -30,12 +30,17 @@ module ModelStream
       Fiber.schedule do
         Fiber[:live_state] = live_state
 
-        new_model = GlobalID::Locator.locate(gid)
+        new_model = begin
+          GlobalID::Locator.locate(gid)
+        rescue ActiveRecord::RecordNotFound
+        end
+
         wrapped.__setobj__(new_model)
         block&.call(new_model)
-        replace
+        new_model.nil? ? remove : replace
 
       rescue => e
+        Rage.logger.error("#{e.class} (#{e.message}):\n#{e.backtrace.join("\n")}")
         Rage::Errors.report(e)
       end
     end
