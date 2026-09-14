@@ -1,6 +1,6 @@
 class Articles::Show < LiveView
   def initialize(article:)
-    @article = live(article)
+    @article = stream(article)
   end
 
   def view_template

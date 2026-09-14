@@ -1,6 +1,6 @@
 class Articles::Card < LiveView
   def initialize(article:)
-    @article = live(article) do |article|
+    @article = stream(article) do |article|
       Notification.new(
         message: "The \"#{article.title}\" article status has been updated to '#{article.status}'"
       ).append(target: "main")

@@ -9,7 +9,7 @@ class Article < ApplicationRecord
 
   def broadcast_status
     if self.previous_changes.key?("status")
-      LiveTracking.broadcast(self)
+      ModelStream.emit(self)
     end
   end
 end

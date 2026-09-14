@@ -15,7 +15,7 @@
 #      component and push the HTML to its own connection over the socket, through the
 #      `Fiber[:live_state][:update]` closure installed by LiveChannel#subscribed.
 class LiveView < Phlex::HTML
-  include LiveTracking
+  include ModelStream
 
   # --- Stream operations: re-render and push to THIS connection. ---
 

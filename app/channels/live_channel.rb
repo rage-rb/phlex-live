@@ -15,7 +15,7 @@ class LiveChannel < Rage::Cable::Channel
     }
   end
 
-  # Tear down signal subscriptions when the WebSocket disconnects, so stale
+  # Tear down pub/sub subscriptions when the WebSocket disconnects, so stale
   # callbacks don't fire into a dead connection.
   def unsubscribed
     cleanup_live_components
@@ -83,10 +83,10 @@ class LiveChannel < Rage::Cable::Channel
     env
   end
 
-  # Unsubscribe all signal listeners, then drop the component registry. Called on
+  # Unsubscribe all pub/sub listeners, then drop the component registry. Called on
   # both navigation (unmount the old page before rendering the new one) and
   # disconnect (final teardown). Cleanup must run before the registry is cleared
-  # so that the lambdas registered by `live` can still reference their models.
+  # so that the lambdas registered by `stream` can still reference their models.
   def cleanup_live_components
     Fiber[:live_state][:cleanup].each(&:call).clear
     Fiber[:live_state][:components].clear
