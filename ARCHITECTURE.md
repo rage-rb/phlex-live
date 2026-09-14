@@ -73,7 +73,7 @@ A CMS admin for articles (list / view / create / edit / delete). Concretely:
   │                           │     HTML       │                                     │
   │ 2. new WebSocket(         │                │                                     │
   │      "/live/live")        │ ═ WS open ════►│ LiveChannel#subscribed              │
-  │                           │                │   Fiber[:live_update] = transmit    │  one
+  │                           │                │   Fiber[:live_state] = {…}          │  one
   │ 3. {type:"navigate",      │ ═ WS msg ═════►│ receive → navigate                  │  fiber
   │     url:"/articles"}      │                │   build a Rack env from the message │  per
   │    (hydrate / link /      │                │   app.call(env) ── in THIS fiber ──┐│  conn
@@ -81,7 +81,7 @@ A CMS admin for articles (list / view / create / edit / delete). Concretely:
   │                           │                │       renders Phlex; LiveView      ││
   │                           │                │       children self-register    ◄──┘│
   │                           │ ◄═ WS msg ═════│   {action:"update", html, url}      │
-  │    morph document         │                │   Fiber[:live_components] =          │
+  │    morph document         │                │   live_state[:components] =          │
   │                           │                │     {"el-8420"=>#<Card…>, …}         │
   │ 4. click Publish          │ ═ WS msg ═════►│ receive → event                     │
   │    {type:"event",         │                │   comp = registry["el-8420"]        │
@@ -117,17 +117,17 @@ Fibers make this cheap: a mostly-idle connection is a parked fiber, not a parked
 and blocking ActiveRecord calls yield to the scheduler instead of pinning a thread. So
 "keep a live object per open tab" scales.
 
-Three things live in that fiber's storage for the life of the connection:
+All connection state lives in `Fiber[:live_state]`, a hash with these keys:
 
-| Key                       | What it is                                                          |
-|---------------------------|--------------------------------------------------------------------|
-| `Fiber[:live_update]`     | A closure over this connection's `transmit` — how components push.  |
-| `Fiber[:live_components]` | Registry: `{ "el-8420" => <component>, … }` — the mounted components. |
-| `Fiber[:live_cleanup]`    | Array of teardown lambdas (e.g. `Rage::Signal.off` calls) run on navigation and disconnect. |
+| Key          | What it is                                                                    |
+|--------------|-------------------------------------------------------------------------------|
+| `:update`    | A closure over this connection's `transmit` — how components push.            |
+| `:components`| Registry: `{ "el-8420" => <component>, … }` — the mounted components.         |
+| `:cleanup`   | Array of teardown lambdas (e.g. `Rage::PubSub.unsubscribe` calls) run on navigation and disconnect. |
 
 This is also what lets navigation delegate to a controller *and* have the rendered
 components register themselves here (see below): the controller runs **in this same
-fiber**, so `Fiber[:live_components]` is the one the connection will read on the next event.
+fiber**, so `Fiber[:live_state][:components]` is the one the connection will read on the next event.
 
 ### The building blocks
 
@@ -135,8 +135,8 @@ fiber**, so `Fiber[:live_components]` is the one the connection will read on the
 |-------|------|----------------|
 | **`LiveChannel`** | `app/channels/live_channel.rb` | The live session. Installs the fiber storage on `subscribe`; on `receive`, **delegates a `navigate` to the Rage app (controllers)** or dispatches an `event` to a component method. |
 | **`ArticlesController`** | `app/controllers/articles_controller.rb` | Ordinary Rage controller. Serves **both** the initial HTTP load and every socket navigation — one implementation, two entry points. |
-| **`LiveView`** | `app/views/live_view.rb` | Base class for interactive components. Generates an id, registers the instance, wraps it in a `<div id>`, and provides stream ops (`replace`/`append`/`prepend`/`remove`) + `live_click`. Includes `LiveTracking`. |
-| **`LiveTracking`** | `app/views/live_tracking.rb` | The `live` helper: subscribes a component to model changes via `Rage::Signal`, auto-reloads via GlobalID, re-renders, and registers cleanup. Also provides `LiveTracking.broadcast` for models and `live?` for dead-vs-live detection. |
+| **`LiveView`** | `app/views/live_view.rb` | Base class for interactive components. Generates an id, registers the instance, wraps it in a `<div id>`, and provides stream ops (`replace`/`append`/`prepend`/`remove`) + `live_click`. Includes `ModelStream`. |
+| **`ModelStream`** | `app/views/model_stream.rb` | The `stream` helper: subscribes a component to model changes via `Rage::PubSub`, auto-reloads via GlobalID, re-renders, and registers cleanup. Also provides `ModelStream.emit` for models. |
 | **`LiveUpdateJs`** | `app/views/live_update_js.rb` | ~140 lines of dependency-light client JS: WebSocket connect/reconnect, event delegation (clicks, forms, popstate), and applying server messages via morphlex. |
 | **`:phlex` renderer** | `config/application.rb` | Renders a component to HTML — used by controllers for both HTTP and socket rendering. |
 
@@ -155,7 +155,7 @@ All server↔client traffic is JSON over the one socket.
 { "type": "event",    "id": "el-8420", "event": "toggle_status" }     // a live_click
 ```
 
-**Server → client** (via `Fiber[:live_update]` → `transmit`, keyed on `action`):
+**Server → client** (via `Fiber[:live_state][:update]` → `transmit`, keyed on `action`):
 
 ```jsonc
 { "action": "update",  "html": "<!doctype…>", "url": "/articles/42" } // full-page morph
@@ -177,7 +177,7 @@ complete HTML — good for first paint, direct links, and no-JS — and it embed
 `:raw_websocket_json` mode) maps that path to `LiveChannel` and runs `subscribed`, which
 installs the fiber storage. The client immediately sends a `navigate` for the current URL.
 The server renders that page **inside the connection fiber**, which registers each
-`LiveView` child in `Fiber[:live_components]`, and pushes it back as an `update`. The
+`LiveView` child in `Fiber[:live_state][:components]`, and pushes it back as an `update`. The
 client morphs it over the identical dead-rendered DOM — visually a no-op, but now the
 server holds live component instances for this tab.
 
@@ -211,7 +211,7 @@ Two things make this work:
   *not* the HTTP stack — so it deliberately omits `Rage::FiberWrapper` (which would spawn a
   new request fiber). `app.call(env)` therefore executes synchronously in this connection's
   fiber, and every `LiveView` the controller renders registers itself in *this*
-  `Fiber[:live_components]`.
+  `Fiber[:live_state][:components]`.
 - **Redirects become the URL.** `ArticlesController` still uses `redirect_to` after a
   mutation; the channel reads the `Location` header and returns it as the canonical `url`
   for the client to place in history.
@@ -226,12 +226,12 @@ change to *this* connection.
 
 When a `LiveView` renders, `around_template` assigns it an id derived from the Ruby
 instance itself (`el-#{object_id}`), stores the **actual instance** in
-`Fiber[:live_components]`, and wraps its output in `<div id="el-8420">`:
+`Fiber[:live_state][:components]`, and wraps its output in `<div id="el-8420">`:
 
 ```ruby
 def around_template
   @live_id ||= "el-#{object_id}"
-  (Fiber[:live_components] ||= {})[@live_id] = self
+  Fiber[:live_state][:components][@live_id] = self if Fiber[:live_state]
   div(id: @live_id) { super }
 end
 ```
@@ -275,37 +275,38 @@ def render_html
 end
 ```
 
-### Cross-connection updates — the `live` helper
+### Cross-connection updates — the `stream` helper
 
 Everything above pushes only to the connection that triggered it. To let *one* user's
-change reach *other* users' open tabs, the app uses `Rage::Signal`, a small process-wide
-pub/sub (marked "in-progress PoC" in Rage itself). The raw `Rage::Signal` API
-(`on`/`off`/`emit`) is wrapped by the **`LiveTracking`** module so that components never
-interact with it directly.
+change reach *other* users' open tabs, the app uses `Rage::PubSub`, a lightweight pub/sub
+mechanism that allows Rage instances to communicate across processes and servers. The raw
+`Rage::PubSub` API (`subscribe`/`unsubscribe`/`publish`) is wrapped by the **`ModelStream`**
+module so that components never interact with it directly.
 
-**Broadcasting.** A model calls `LiveTracking.broadcast(self)` in an `after_commit`
+**Publishing.** A model calls `ModelStream.emit(self)` in an `after_commit`
 callback. The method encodes the model's identity as a
-[GlobalID](https://github.com/rails/globalid) and emits it via `Rage::Signal`:
+[GlobalID](https://github.com/rails/globalid) and publishes it via `Rage::PubSub`:
 
 ```ruby
 class Article < ApplicationRecord
   after_commit :broadcast_status
 
   def broadcast_status
-    LiveTracking.broadcast(self) if previous_changes.key?("status")
+    ModelStream.emit(self) if previous_changes.key?("status")
   end
 end
 ```
 
-**Subscribing.** A component uses the `live` helper in its initializer. `live` wraps the
-model in a `SimpleDelegator`, subscribes to signals for that model, and — when a signal
-arrives — locates a fresh copy via GlobalID, swaps it into the delegator, runs an optional
-block (for side effects like toasts), and re-renders the component:
+**Subscribing.** A component uses the `stream` helper in its initializer. `stream` wraps the
+model in a `SimpleDelegator`, subscribes to messages for that model, and — when a message
+arrives — schedules a new fiber, reconstructs `Fiber[:live_state]` in it, locates a fresh
+copy via GlobalID, swaps it into the delegator, runs an optional block (for side effects
+like toasts), and re-renders the component:
 
 ```ruby
 class Articles::Card < LiveView
   def initialize(article:)
-    @article = live(article) do |article|
+    @article = stream(article) do |article|
       Notification.new(
         message: "…updated to '#{article.status}'"
       ).append(target: "main")
@@ -314,26 +315,27 @@ class Articles::Card < LiveView
 end
 ```
 
-When no extra side effect is needed, a bare `@article = live(article)` is enough — the
+When no extra side effect is needed, a bare `@article = stream(article)` is enough — the
 component will still auto-reload and re-render on changes.
 
-During a dead (HTTP) render, `live` is a no-op: it returns the model unwrapped so the same
+During a dead (HTTP) render, `stream` is a no-op: it returns the model unwrapped so the same
 component code works for both the initial page load and the WebSocket session.
 
-**Cleanup.** Each `live` call pushes a teardown lambda (`Rage::Signal.off`) into
-`Fiber[:live_cleanup]`. `LiveChannel` runs these on every navigation (unmount the old page
-before rendering the new one) and on disconnect, so subscriptions no longer accumulate.
+**Cleanup.** Each `stream` call pushes a teardown lambda (`Rage::PubSub.unsubscribe`) into
+`Fiber[:live_state][:cleanup]`. `LiveChannel` runs these on every navigation (unmount the
+old page before rendering the new one) and on disconnect, so subscriptions no longer
+accumulate.
 
-The mechanism that makes signals land on the right socket: `Rage::Signal.on` runs each
-subscriber's callback in a per-connection worker fiber created with `Fiber.schedule`, which
-**inherits the connection fiber's storage** — so the callback still sees this connection's
-`Fiber[:live_update]` and can `append`/`replace` straight to it. So a publish from anywhere
-fans out: every connection that rendered that article re-renders the component (and shows a
-toast if the component's `live` block requests one).
+**Fiber scheduling.** When a pub/sub message arrives, `Rage::PubSub` invokes the callback
+in the current context — but the callback needs to perform blocking operations (like
+`GlobalID::Locator.locate`) and push updates to the client. To handle this, `ModelStream`
+schedules a new fiber via `Fiber.schedule` and reconstructs `Fiber[:live_state]` (captured
+at subscription time) into that fiber. This allows the callback to call `replace` and have
+it push to the correct client connection.
 
-**Broadcasting facts.** The conventional way to fan a change out — render HTML once in the
+**Publishing facts.** The conventional way to fan a change out — render HTML once in the
 `after_commit` and broadcast those bytes for every subscriber to swap in — is deliberately
-not what happens here. `LiveTracking.broadcast(self)` emits a fact (i.e. only the model's identity — a GlobalID); the payload carries no markup and knows nothing about views. Each per-connection component decides how to re-render itself (honoring its own in-memory state) and pushes only to its own socket.
+not what happens here. `ModelStream.emit(self)` publishes a fact (i.e. only the model's identity — a GlobalID); the payload carries no markup and knows nothing about views. Each per-connection component decides how to re-render itself (honoring its own in-memory state) and pushes only to its own socket.
 
 So a single publish becomes **N independent re-renders, each correct for its own UI**, rather
 than one render copied into N identical DOMs.
@@ -366,9 +368,8 @@ is unreachable from the client.
 - **Navigation delegated to the Rage app** — one controller implementation serves both the
   HTTP load and every socket navigation (links, forms, back/forward, `_method` overrides).
 - Targeted stream ops (`replace` / `append` / `prepend` / `remove`) + `live_click`.
-- Cross-connection updates via `Rage::Signal` (experimental) + toast `Notification`s.
-- `live` helper for declarative model tracking — auto-reload, re-render, optional side-effect block, with subscription cleanup on navigation and disconnect.
-- `live?` helper to distinguish live (WebSocket) renders from dead (HTTP) renders.
+- Cross-connection updates via `Rage::PubSub` + toast `Notification`s.
+- `stream` helper for declarative model tracking — auto-reload, re-render, optional side-effect block, with subscription cleanup on navigation and disconnect.
 - Progressive enhancement: HTTP dead render for first paint / no-JS.
 
 **Not yet done / known limitations**
@@ -379,10 +380,6 @@ is unreachable from the client.
 - **Mutation redirects don't carry a body.** A `redirect_to` (create/update/delete) returns
   a 302 with an empty body, so the `navigate` message carries the target `url` but no HTML;
   the target page isn't rendered as part of the same round-trip yet.
-- **`Rage::Signal` is a PoC.** Each connection's subscriber fiber captures fiber storage
-  by inheritance — fine for a demo, not production-ready fan-out. Subscriptions are now
-  cleaned up on navigation and disconnect via `Fiber[:live_cleanup]`, but a durable version
-  would scope streams to a user.
 - **No server-side diffing.** The whole component (or page) is re-rendered and morphlex
   computes the patch in the browser — fine for small components, wasteful for large ones.
 - **Reconnect re-hydrates from scratch.** A dropped socket re-mounts the page, so transient
@@ -400,16 +397,16 @@ app/
     articles_controller.rb # ordinary controller — serves HTTP load AND socket navigations
     application_controller.rb
   models/
-    article.rb             # after_commit -> Rage::Signal.emit on status change
+    article.rb             # after_commit -> ModelStream.emit on status change
   views/
     live_view.rb           # LiveView base: identity, registry, stream ops, live_click
-    live_tracking.rb       # `live` helper: model tracking, broadcast, cleanup, live?
+    model_stream.rb        # `stream` helper: model tracking, publish, cleanup
     live_update_js.rb       # client: WebSocket + event delegation + morphlex
     layout.rb              # shared HTML shell (main#main); embeds live_update_scripts
-    notification.rb        # LiveView toast, appended on a Rage::Signal event
+    notification.rb        # LiveView toast, appended on pub/sub event
     articles/
       card.rb              # LiveView: toggle_status (persistent) + toggle_details (transient)
-      show.rb              # LiveView: subscribes to article_changed signals
+      show.rb              # LiveView: subscribes to article changes via `stream`
       index.rb  form.rb    # plain Phlex pages
 config/
   application.rb           # :phlex renderer + config.cable.protocol = :raw_websocket_json
