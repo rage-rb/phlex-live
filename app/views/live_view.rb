@@ -3,7 +3,7 @@
 # A LiveView differs from a plain Phlex view in three ways:
 #
 #   1. Identity — it is wrapped in a <div> with a generated id and registered in the
-#      connection's fiber-local registry (`Fiber[:live_components]`). The server can
+#      connection's `Fiber[:live_state][:components]` registry. The server can
 #      therefore find this exact instance again when the client dispatches an event
 #      to it. No id encoding, no database reconstruction — just a lookup.
 #
@@ -13,7 +13,7 @@
 #
 #   3. Reactivity — stream operations (replace/append/prepend/remove) re-render the
 #      component and push the HTML to its own connection over the socket, through the
-#      `Fiber[:live_update]` closure installed by LiveChannel#subscribed.
+#      `Fiber[:live_state][:update]` closure installed by LiveChannel#subscribed.
 class LiveView < Phlex::HTML
   include LiveTracking
 
@@ -36,7 +36,9 @@ class LiveView < Phlex::HTML
 
   # Remove this component's element from the client and drop it from the registry.
   def remove
-    Fiber[:live_components]&.delete(@live_id)
+    return unless Fiber[:live_state]
+
+    Fiber[:live_state][:components].delete(@live_id)
     emit(action: "remove", id: @live_id)
   end
 
@@ -51,10 +53,11 @@ class LiveView < Phlex::HTML
 
   private
 
-  # Push a payload to the current connection. `Fiber[:live_update]` closes over this
-  # connection's `transmit` and only exists inside the WebSocket fiber.
+  # Push a payload to the current connection. `Fiber[:live_state][:update]` closes over
+  # this connection's `transmit` and only exists inside the WebSocket fiber.
   def emit(payload)
-    Fiber[:live_update]&.call(payload)
+    return unless Fiber[:live_state]
+    Fiber[:live_state][:update].call(payload)
   end
 
   # Phlex refuses to render an instance more than once. Because a live component
@@ -70,7 +73,7 @@ class LiveView < Phlex::HTML
   # assigned once and preserved, so re-renders keep targeting the same element.
   def around_template
     @live_id ||= "el-#{object_id}"
-    (Fiber[:live_components] ||= {})[@live_id] = self
+    Fiber[:live_state][:components][@live_id] = self if Fiber[:live_state]
     div(id: @live_id) { super }
   end
 end

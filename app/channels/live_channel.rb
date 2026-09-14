@@ -4,15 +4,15 @@ require "uri"
 # this channel runs inside it: `subscribed` and every `receive` execute in that same
 # fiber. Anything stored in `Fiber[...]` here therefore persists for the lifetime of
 # the connection — which is what makes the components stateful. A rendered component
-# is kept in `Fiber[:live_components]` and can hold transient UI state across events,
-# with no id encoding and no database reload to reconstruct it.
+# is kept in `Fiber[:live_state][:components]` and can hold transient UI state across
+# events, with no id encoding and no database reload to reconstruct it.
 class LiveChannel < Rage::Cable::Channel
   def subscribed
-    # A closure over THIS connection's `transmit`. Any component rendered in this
-    # fiber can push an update straight to this client via `Fiber[:live_update].call`.
-    Fiber[:live_update] = ->(payload) { transmit(payload) }
-    Fiber[:live_components] = {}
-    Fiber[:live_cleanup] = []
+    Fiber[:live_state] = {
+      update: ->(payload) { transmit(payload) },
+      components: {},
+      cleanup: []
+    }
   end
 
   # Tear down signal subscriptions when the WebSocket disconnects, so stale
@@ -53,7 +53,7 @@ class LiveChannel < Rage::Cable::Channel
   # component is still in memory with all of its state, so we just look it up and call
   # the requested method; the method pushes any resulting update itself (via #replace).
   def handle_event(data)
-    component = Fiber[:live_components][data["id"]]
+    component = Fiber[:live_state][:components][data["id"]]
     return unless component
 
     event = data["event"].to_sym
@@ -88,7 +88,7 @@ class LiveChannel < Rage::Cable::Channel
   # disconnect (final teardown). Cleanup must run before the registry is cleared
   # so that the lambdas registered by `live` can still reference their models.
   def cleanup_live_components
-    Fiber[:live_cleanup].each(&:call).clear
-    Fiber[:live_components].clear
+    Fiber[:live_state][:cleanup].each(&:call).clear
+    Fiber[:live_state][:components].clear
   end
 end
