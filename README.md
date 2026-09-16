@@ -1,50 +1,80 @@
 # phlex-live
 
-A proof of concept for **LiveView-style reactivity in Ruby**: stateful Phlex components
-that live for the length of a WebSocket connection and update themselves on the page in
-real time. Built on [Phlex](https://github.com/phlex-ruby/phlex) (views as Ruby classes),
-[Rage](https://github.com/rage-rb/rage) (fiber-based, native WebSockets), and
-[morphlex](https://github.com/yippee-fun/morphlex) (DOM morphing).
-
-The demo is a small article CMS. A component is the unit of both rendering and behavior —
-no template files, no per-interaction controllers, no hand-written client framework:
+A working proof of concept for **LiveView-style reactivity in Ruby**: stateful Phlex components that persist for the life of a WebSocket connection and update themselves in place.
 
 ```ruby
 class Articles::Card < LiveView
   def initialize(article:)
     @article  = article
-    @expanded = false          # transient UI state, kept in memory for the session
+    @expanded = false
   end
 
   def view_template
     div(class: "card") do
       button(**live_click(:toggle_status)) { @article.status == "draft" ? "Publish" : "Unpublish" }
       button(**live_click(:toggle_details)) { @expanded ? "Show less" : "Show more" }
-      # ...
+      p { @expanded ? @article.body : @article.body.truncate(150) }
     end
   end
 
-  def toggle_status   # persistent change: writes the DB, then re-renders
+  def toggle_status   # persistent: writes the DB
     @article.update!(status: @article.status == "draft" ? "published" : "draft")
-    replace
   end
 
-  def toggle_details  # transient change: in-memory only, survives across events
+  def toggle_details  # transient: in-memory only
     @expanded = !@expanded
-    replace
   end
 end
 ```
 
-The component stays in memory on the server (in the connection's fiber storage) between
-events, so it can hold transient state and re-render itself without any id encoding or
-database reload.
+The component lives in memory on the server for the length of the WebSocket connection. Click "Show more" and `@expanded` flips to `true`; click again and it flips back. No database column, no URL param, no JavaScript — just an instance variable that survives across events because the object itself survives. `toggle_status` writes to the database; `toggle_details` doesn't. Both re-render the component automatically.
 
-## Documentation
+## Cross-connection updates
 
-See **[ARCHITECTURE.md](ARCHITECTURE.md)** for the motivation, what the system does, and a
-full walkthrough of how it works — the fiber model, the message protocol, the four request
-flows, and the current state (including what's not yet done, such as authentication).
+When one user publishes an article, every other user viewing that article should see it update. The `stream` helper subscribes a component to model changes via pub/sub:
+
+```ruby
+class Articles::Card < LiveView
+  def initialize(article:)
+    @article = stream(article) do |article|
+      Notification.new(message: "#{article.title} is now #{article.status}").append(target: "main")
+    end
+    @expanded = false
+  end
+  # ...
+end
+```
+
+When `Article` calls `ModelStream.emit(self)` in an `after_commit`, every subscribed component reloads the model and re-renders — each honoring its own `@expanded` state. Subscriptions are cleaned up automatically on navigation and disconnect.
+
+## How it works
+
+```
+Browser                                      Server
+┌───────────────────────────┐                ┌─────────────────────────────────────┐
+│ 1. GET /articles          │ ── HTTP ─────► │ ArticlesController#index            │
+│    (first paint)          │ ◄───────────── │   → server-rendered HTML            │
+│                           │                │                                     │
+│ 2. WebSocket /live        │ ═══ open ════► │ LiveChannel#subscribed              │
+│                           │                │   Fiber[:live_state] = {…}          │
+│ 3. navigate /articles     │ ═══ msg ═════► │ navigate → router → controller      │
+│    (hydrate/link/form)    │                │   components self-register          │
+│                           │ ◄══ msg ══════ │   {action:"update", html, url}      │
+│    morph document         │                │                                     │
+│                           │                │                                     │
+│ 4. click Publish          │ ═══ msg ═════► │ event → component.toggle_status     │
+│    {id:"el-42",           │                │   → auto-replace                    │
+│     event:"toggle_status"}│ ◄══ msg ══════ │   {action:"replace", html}          │
+│    morph #el-42           │                │                                     │
+└───────────────────────────┘                └─────────────────────────────────────┘
+```
+
+The first page load is ordinary server-rendered HTML. Then the client opens a WebSocket connection — one per tab, one long-lived fiber on the server. Navigation (links, forms, back/forward) is delegated to the same controllers that serve HTTP, running in the connection's fiber so rendered components register themselves in fiber storage. Events are dispatched to component methods; components re-render and push HTML to the client, which morphs it into the page.
+
+Built on:
+- **[Phlex](https://github.com/phlex-ruby/phlex)** — views as Ruby classes
+- **[Rage](https://github.com/rage-rb/rage)** — fiber-based framework with native WebSockets
+- **[morphlex](https://github.com/yippee-fun/morphlex)** — DOM morphing
 
 ## Run it
 
@@ -53,3 +83,9 @@ bundle install
 bundle exec rage db:setup
 bundle exec rage s          # http://localhost:3000
 ```
+
+Open two browser tabs. Each maintains its own live session with its own `@expanded` states. Publish/unpublish persists to the database and propagates to other tabs; "Show more/less" is local to each tab.
+
+## Documentation
+
+See **[ARCHITECTURE.md](ARCHITECTURE.md)** for the full deep dive: the fiber model, the message protocol, how navigation is delegated to controllers, how `stream` works, security considerations, and current limitations.
