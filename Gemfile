@@ -1,6 +1,6 @@
 source "https://rubygems.org"
 
-gem "rage-rb", github: "rage-rb/rage", branch: "live-poc"
+gem "rage-rb", github: "rage-rb/rage", branch: "main"
 
 gem "sqlite3"
 gem "activerecord"
