@@ -1,5 +1,7 @@
 # phlex-live
 
+<img width="800" alt="demo_full_1080" src="https://github.com/user-attachments/assets/661d38e5-f7db-4579-a6f1-f3b5d94ed52a" />
+
 A working proof of concept for **LiveView-style reactivity in Ruby**: stateful Phlex components that persist for the life of a WebSocket connection and update themselves in place.
 
 ```ruby
